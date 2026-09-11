@@ -54,8 +54,12 @@ def now_iso() -> str:
 
 
 def fingerprint(path: Path) -> str:
-    stat = path.stat()
-    return hashlib.sha256(f"{stat.st_size}:{stat.st_mtime_ns}".encode()).hexdigest()
+    """Return a SHA-256 fingerprint of the file contents."""
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class UploadService:
@@ -123,11 +127,14 @@ class UploadService:
                         )
                         file_id = cur.lastrowid
                         self.enqueue(file_id)
-                    elif row["fingerprint"] != fp or row["status"] in ("success", "pending", "uploading"):
+                    elif row["fingerprint"] != fp:
                         conn.execute(
                             "UPDATE files SET size=?,mtime=?,fingerprint=?,status='pending',attempts=0,last_error=NULL,next_retry=NULL,updated_at=? WHERE id=?",
                             (stat.st_size, stat.st_mtime, fp, now_iso(), row["id"]),
                         )
+                        self.enqueue(row["id"])
+                    elif row["status"] in ("pending", "uploading"):
+                        # Recover queued/in-progress work after a service restart.
                         self.enqueue(row["id"])
                     elif row["status"] == "retry" and (row["next_retry"] or 0) <= current_time:
                         self.enqueue(row["id"])
@@ -162,22 +169,35 @@ class UploadService:
             return
         self.mark_status(file_id, "uploading")
         try:
+            adi_bytes = path.read_bytes()
+            uploaded_fingerprint = hashlib.sha256(adi_bytes).hexdigest()
+            stat = path.stat()
+            if uploaded_fingerprint != row["fingerprint"]:
+                # The file changed after it was scanned. Upload the current
+                # contents and make that exact version the recorded baseline.
+                with connect() as conn:
+                    conn.execute(
+                        "UPDATE files SET size=?,mtime=?,fingerprint=?,updated_at=? WHERE id=?",
+                        (stat.st_size, stat.st_mtime, uploaded_fingerprint, now_iso(), file_id),
+                    )
             async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
                 station_id = row["station_profile_id"] or await self.resolve_station_id(client, row["server_url"], row["api_key"])
                 payload = {
                     "key": row["api_key"],
                     "station_profile_id": station_id,
                     "type": "adif",
-                    "string": path.read_text(encoding="utf-8-sig", errors="replace"),
+                    "string": adi_bytes.decode("utf-8-sig", errors="replace"),
                 }
                 url = row["server_url"].rstrip("/") + "/index.php/api/qso"
                 response = await client.post(url, json=payload)
-            # Wavelog reports an already-imported QSO as an error response. It
-            # is an expected result for this service because scans intentionally
-            # submit the same ADI files again, so do not surface it as a failure.
+            # Wavelog may report an already-imported QSO as an error response.
+            # Treat that expected idempotency result as a successful upload.
             if is_duplicate_response(response) or not is_api_error(response):
                 with connect() as conn:
-                    conn.execute("UPDATE files SET status='success',attempts=0,last_error=NULL,next_retry=NULL,upload_count=upload_count+1,last_uploaded_at=?,updated_at=? WHERE id=?", (now_iso(), now_iso(), file_id))
+                    conn.execute(
+                        "UPDATE files SET status='success',attempts=0,last_error=NULL,next_retry=NULL,upload_count=upload_count+1,last_uploaded_at=?,updated_at=? WHERE id=? AND fingerprint=?",
+                        (now_iso(), now_iso(), file_id, uploaded_fingerprint),
+                    )
             else:
                 self.mark_failed(file_id, f"HTTP {response.status_code}: {response.text[:500]}")
         except Exception as exc:

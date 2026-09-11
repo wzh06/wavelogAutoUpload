@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 import httpx
 
@@ -12,6 +13,15 @@ def test_fingerprint_changes(tmp_path):
     first = fingerprint(path)
     path.write_text("QSO: two")
     assert fingerprint(path) != first
+
+
+def test_fingerprint_ignores_timestamp_only_changes(tmp_path):
+    path = tmp_path / "a.adi"
+    path.write_text("QSO: unchanged")
+    first = fingerprint(path)
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert fingerprint(path) == first
 
 
 def test_active_station_is_selected():
@@ -213,3 +223,30 @@ def test_scan_recovers_pending_but_not_final_failure(tmp_path, monkeypatch):
     service.scan_all(force=True)
     assert pending_id in service.queued
     assert failed_id not in service.queued
+
+
+def test_scan_uploads_successful_file_only_after_content_changes(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "change-detection.db")
+    db.init_db()
+    adi_path = tmp_path / "log.adi"
+    adi_path.write_text("<CALL:5>BA1AA<EOR>", encoding="utf-8")
+    with db.connect() as conn:
+        user_id = conn.execute(
+            "INSERT INTO users(name,directory,server_url,api_key) VALUES(?,?,?,?)",
+            ("Alice", str(tmp_path), "https://radio.example", "secret"),
+        ).lastrowid
+        file_id = conn.execute(
+            "INSERT INTO files(user_id,path,size,mtime,fingerprint,status) VALUES(?,?,?,?,?,'success')",
+            (user_id, str(adi_path), adi_path.stat().st_size, adi_path.stat().st_mtime, fingerprint(adi_path)),
+        ).lastrowid
+
+    service = UploadService()
+    service.scan_all(force=True)
+    assert file_id not in service.queued
+
+    adi_path.write_text("<CALL:5>BA2BB<EOR>", encoding="utf-8")
+    service.scan_all(force=True)
+    assert file_id in service.queued
+    with db.connect() as conn:
+        changed = conn.execute("SELECT status,fingerprint FROM files WHERE id=?", (file_id,)).fetchone()
+    assert tuple(changed) == ("pending", fingerprint(adi_path))

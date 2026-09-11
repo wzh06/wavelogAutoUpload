@@ -15,6 +15,7 @@ def test_user_configuration_flow(tmp_path, monkeypatch):
         assert "Wavelog ADI 自动上传" in response.text
         assert 'name="scan_interval"' in response.text
         assert 'value="1800"' in response.text
+        assert "变更校验间隔（秒）" in response.text
 
         response = client.post(
             "/users",
