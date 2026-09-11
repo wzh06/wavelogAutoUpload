@@ -88,6 +88,106 @@ def test_upload_uses_wavelog_qso_json(tmp_path, monkeypatch):
     assert tuple(uploaded) == ("success", 1)
 
 
+def test_duplicate_qso_is_not_shown_as_an_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "duplicate.db")
+    db.init_db()
+    adi_path = tmp_path / "log.adi"
+    adi_path.write_text("<CALL:5>BA1AA<EOR>", encoding="utf-8")
+    with db.connect() as conn:
+        user_id = conn.execute(
+            "INSERT INTO users(name,directory,server_url,api_key,station_profile_id) VALUES(?,?,?,?,?)",
+            ("Alice", str(tmp_path), "https://radio.example", "secret", "7"),
+        ).lastrowid
+        file_id = conn.execute(
+            "INSERT INTO files(user_id,path,fingerprint) VALUES(?,?,?)",
+            (user_id, str(adi_path), fingerprint(adi_path)),
+        ).lastrowid
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, url, json):
+            return httpx.Response(400, json={"status": "error", "message": "Duplicate QSO"})
+
+    monkeypatch.setattr("app.service.httpx.AsyncClient", FakeClient)
+    asyncio.run(UploadService().upload_file(file_id))
+
+    with db.connect() as conn:
+        uploaded = conn.execute("SELECT status,last_error,attempts FROM files WHERE id=?", (file_id,)).fetchone()
+    assert tuple(uploaded) == ("success", None, 0)
+
+
+def test_non_duplicate_api_error_is_still_recorded(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "api-error.db")
+    db.init_db()
+    adi_path = tmp_path / "log.adi"
+    adi_path.write_text("<CALL:5>BA1AA<EOR>", encoding="utf-8")
+    with db.connect() as conn:
+        user_id = conn.execute(
+            "INSERT INTO users(name,directory,server_url,api_key,station_profile_id) VALUES(?,?,?,?,?)",
+            ("Alice", str(tmp_path), "https://radio.example", "secret", "7"),
+        ).lastrowid
+        file_id = conn.execute(
+            "INSERT INTO files(user_id,path,fingerprint) VALUES(?,?,?)",
+            (user_id, str(adi_path), fingerprint(adi_path)),
+        ).lastrowid
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, url, json):
+            return httpx.Response(400, json={"status": "error", "message": "Invalid API key"})
+
+    monkeypatch.setattr("app.service.httpx.AsyncClient", FakeClient)
+    asyncio.run(UploadService().upload_file(file_id))
+
+    with db.connect() as conn:
+        failed = conn.execute("SELECT status,last_error,attempts FROM files WHERE id=?", (file_id,)).fetchone()
+    assert failed[0] == "retry"
+    assert "Invalid API key" in failed[1]
+    assert failed[2] == 1
+
+
+def test_old_duplicate_errors_are_cleared_but_other_errors_remain(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "old-errors.db")
+    db.init_db()
+    with db.connect() as conn:
+        user_id = conn.execute(
+            "INSERT INTO users(name,directory,server_url,api_key) VALUES(?,?,?,?)",
+            ("Alice", str(tmp_path), "https://radio.example", "secret"),
+        ).lastrowid
+        duplicate_id = conn.execute(
+            "INSERT INTO files(user_id,path,status,attempts,last_error) VALUES(?,?,'failed',5,?)",
+            (user_id, str(tmp_path / "duplicate.adi"), "HTTP 400: Duplicate QSO"),
+        ).lastrowid
+        other_id = conn.execute(
+            "INSERT INTO files(user_id,path,status,attempts,last_error) VALUES(?,?,'failed',5,?)",
+            (user_id, str(tmp_path / "invalid.adi"), "HTTP 401: Invalid API key"),
+        ).lastrowid
+
+    UploadService().clear_duplicate_failures()
+
+    with db.connect() as conn:
+        duplicate = conn.execute("SELECT status,attempts,last_error FROM files WHERE id=?", (duplicate_id,)).fetchone()
+        other = conn.execute("SELECT status,attempts,last_error FROM files WHERE id=?", (other_id,)).fetchone()
+    assert tuple(duplicate) == ("success", 0, None)
+    assert tuple(other) == ("failed", 5, "HTTP 401: Invalid API key")
+
+
 def test_scan_recovers_pending_but_not_final_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "scan.db")
     db.init_db()

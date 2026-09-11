@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
+import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +13,40 @@ import httpx
 from .db import connect
 
 logger = logging.getLogger(__name__)
+
+_DUPLICATE_RE = re.compile(r"\bduplicate(?:d)?\b|\bdupe\b", re.IGNORECASE)
+
+
+def _response_body(response: httpx.Response) -> str:
+    """Return a searchable representation of a Wavelog API response."""
+    body = response.text
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return body
+    try:
+        return json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return body
+
+
+def is_duplicate_response(response: httpx.Response) -> bool:
+    """Whether Wavelog says that the submitted QSO is already present."""
+    return bool(_DUPLICATE_RE.search(_response_body(response)))
+
+
+def is_api_error(response: httpx.Response) -> bool:
+    """Whether a successful HTTP response still reports an API-level error."""
+    if not response.is_success:
+        return True
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    status = payload.get("status")
+    return (isinstance(status, str) and status.strip().lower() in {"error", "failed", "failure"}) or status is False
 
 
 def now_iso() -> str:
@@ -33,6 +69,7 @@ class UploadService:
 
     async def start(self) -> None:
         self.stop_event.clear()
+        self.clear_duplicate_failures()
         self.scan_task = asyncio.create_task(self.scan_loop())
         self.upload_task = asyncio.create_task(self.upload_loop())
 
@@ -135,7 +172,10 @@ class UploadService:
                 }
                 url = row["server_url"].rstrip("/") + "/index.php/api/qso"
                 response = await client.post(url, json=payload)
-            if response.is_success:
+            # Wavelog reports an already-imported QSO as an error response. It
+            # is an expected result for this service because scans intentionally
+            # submit the same ADI files again, so do not surface it as a failure.
+            if is_duplicate_response(response) or not is_api_error(response):
                 with connect() as conn:
                     conn.execute("UPDATE files SET status='success',attempts=0,last_error=NULL,next_retry=NULL,upload_count=upload_count+1,last_uploaded_at=?,updated_at=? WHERE id=?", (now_iso(), now_iso(), file_id))
             else:
@@ -160,6 +200,16 @@ class UploadService:
     def mark_status(self, file_id: int, status: str) -> None:
         with connect() as conn:
             conn.execute("UPDATE files SET status=?,updated_at=? WHERE id=?", (status, now_iso(), file_id))
+
+    def clear_duplicate_failures(self) -> None:
+        """Remove duplicate-only errors saved by older versions of the service."""
+        with connect() as conn:
+            rows = conn.execute("SELECT id,last_error FROM files WHERE last_error IS NOT NULL").fetchall()
+            duplicate_ids = [row["id"] for row in rows if _DUPLICATE_RE.search(row["last_error"])]
+            conn.executemany(
+                "UPDATE files SET status='success',attempts=0,last_error=NULL,next_retry=NULL,updated_at=? WHERE id=?",
+                [(now_iso(), file_id) for file_id in duplicate_ids],
+            )
 
     def mark_failed(self, file_id: int, error: str) -> None:
         with connect() as conn:
