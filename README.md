@@ -6,7 +6,9 @@ Windows 局域网服务：通过 WebUI 管理多个人的 ADI 目录和 Wavelog 
 
 双击 `run_windows.bat`，首次运行会创建虚拟环境并安装依赖。浏览器打开 `http://电脑IP:10086/`。
 
-需要 Windows 已安装 Python 3.10 或更高版本，并在安装时启用 Python Launcher（`py` 命令）。
+需要 Windows 已安装 Python 3.10 或更高版本。启动脚本优先使用 Python Launcher（`py`），如果没有则自动尝试 `python` 命令。
+
+如果启动失败，脚本会保留 CMD 窗口并显示具体原因；常见原因是 Python 未安装、未加入 PATH，或依赖下载失败。
 
 服务监听 `0.0.0.0:10086`，当前版本不设置登录鉴权，请只在可信局域网使用，并在 Windows 防火墙中按需放行 10086 端口。
 
