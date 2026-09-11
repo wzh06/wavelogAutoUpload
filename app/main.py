@@ -72,8 +72,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Wavelog ADI Auto Upload", lifespan=lifespan)
 
 
-async def _query_stations(server_url: str, api_key: str) -> JSONResponse:
+async def _query_stations(server_url: str, api_key: str, user_id: int | None = None) -> JSONResponse:
     """Return station profiles without exposing the API key to the UI."""
+    api_key = api_key.strip()
+    if not api_key and user_id is not None:
+        # Editing a saved profile does not put the old key in the page.  When
+        # the new-key field is blank, use the key already stored for this user.
+        with connect() as conn:
+            row = conn.execute("SELECT api_key FROM users WHERE id=?", (user_id,)).fetchone()
+        if row:
+            api_key = row["api_key"]
     try:
         stations = await service.list_stations(server_url, api_key)
     except (ValueError, httpx.HTTPError) as exc:
@@ -82,13 +90,13 @@ async def _query_stations(server_url: str, api_key: str) -> JSONResponse:
 
 
 @app.get("/api/stations")
-async def query_stations_get(server_url: str, api_key: str):
-    return await _query_stations(server_url, api_key)
+async def query_stations_get(server_url: str, api_key: str = "", user_id: int | None = None):
+    return await _query_stations(server_url, api_key, user_id)
 
 
 @app.post("/api/stations")
-async def query_stations_post(server_url: str = Form(...), api_key: str = Form(...)):
-    return await _query_stations(server_url, api_key)
+async def query_stations_post(server_url: str = Form(...), api_key: str = Form(""), user_id: int | None = Form(None)):
+    return await _query_stations(server_url, api_key, user_id)
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -40,9 +40,10 @@
       stations.forEach(function (station) {
         const id = String(station.station_id);
         const name = station.station_profile_name || station.station_name || station.station_callsign || ('台站 ' + id);
+        const grid = station.station_gridsquare || station.station_grid || station.grid || station.station_locator || station.locator || station.grid_square || '未设置';
         const option = document.createElement('option');
         option.value = id;
-        option.textContent = name + '（ID: ' + id + (String(station.station_active) === '1' ? '，启用' : '') + '）';
+        option.textContent = name + '（网格: ' + grid + '，ID: ' + id + (String(station.station_active) === '1' ? '，启用' : '') + '）';
         if (!selected && String(station.station_active) === '1') { option.selected = true; selected = true; }
         select.appendChild(option);
       });
