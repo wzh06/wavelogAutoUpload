@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
+import sys
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -9,6 +10,21 @@ from .db import connect, init_db
 from .service import service
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+
+def configure_console_encoding() -> None:
+    """Keep Python console output readable in Windows CMD and other terminals."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                # Some redirected or embedded streams do not allow reconfiguration.
+                pass
+
+
+configure_console_encoding()
 
 
 @asynccontextmanager

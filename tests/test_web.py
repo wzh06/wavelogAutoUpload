@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app import db
-from app.main import app
+from app.main import app, configure_console_encoding
 
 
 def test_user_configuration_flow(tmp_path, monkeypatch):
@@ -38,3 +38,22 @@ def test_user_configuration_flow(tmp_path, monkeypatch):
         assert response.status_code == 200
         with db.connect() as conn:
             assert conn.execute("SELECT COUNT(*) FROM users WHERE id=?", (user_id,)).fetchone()[0] == 0
+
+
+def test_console_encoding_reconfigure_is_safe(monkeypatch):
+    class Stream:
+        def __init__(self):
+            self.calls = []
+
+        def reconfigure(self, **kwargs):
+            self.calls.append(kwargs)
+
+    stdout = Stream()
+    stderr = Stream()
+    monkeypatch.setattr("app.main.sys.stdout", stdout)
+    monkeypatch.setattr("app.main.sys.stderr", stderr)
+
+    configure_console_encoding()
+
+    assert stdout.calls == [{"encoding": "utf-8", "errors": "replace"}]
+    assert stderr.calls == [{"encoding": "utf-8", "errors": "replace"}]

@@ -1,6 +1,12 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+
+rem Use UTF-8 for Chinese output in Windows CMD.
+chcp 65001 >nul
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+
 if not exist .venv (
   py -3 -m venv .venv
 )
