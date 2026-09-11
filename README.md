@@ -14,7 +14,7 @@ Windows 局域网服务：通过 WebUI 管理多个人的 ADI 目录和 Wavelog 
 
 ## Wavelog 配置
 
-每个用户单独填写服务器 URL 和 API key。服务使用 Wavelog 官方 `/index.php/api/qso` JSON 接口，并自动通过 `/index.php/api/station_info/{key}` 选择启用的电台位置；一个 key 有多个位置时，可在界面填写明确的电台位置 ID。
+每个用户单独填写服务器 URL 和 API key。添加或编辑配置时，点击“查询台站”会通过 `/index.php/api/station_info/{key}` 获取该 key 可用的台站，并可在下拉菜单中选择上传目标；未选择时仍会自动使用第一个启用的台站。上传使用 Wavelog 官方 `/index.php/api/qso` JSON 接口。
 
 SQLite 数据库位于 `data/wavelog.db`，包含用户配置和文件状态，重启后可恢复。
 

@@ -3,8 +3,9 @@ import logging
 from pathlib import Path
 import sys
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+import httpx
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from .db import DEFAULT_SCAN_INTERVAL, connect, init_db
@@ -69,6 +70,25 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Wavelog ADI Auto Upload", lifespan=lifespan)
+
+
+async def _query_stations(server_url: str, api_key: str) -> JSONResponse:
+    """Return station profiles without exposing the API key to the UI."""
+    try:
+        stations = await service.list_stations(server_url, api_key)
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"stations": stations})
+
+
+@app.get("/api/stations")
+async def query_stations_get(server_url: str, api_key: str):
+    return await _query_stations(server_url, api_key)
+
+
+@app.post("/api/stations")
+async def query_stations_post(server_url: str = Form(...), api_key: str = Form(...)):
+    return await _query_stations(server_url, api_key)
 
 
 @app.get("/", response_class=HTMLResponse)

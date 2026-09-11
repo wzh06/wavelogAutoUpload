@@ -183,19 +183,40 @@ class UploadService:
         except Exception as exc:
             self.mark_failed(file_id, str(exc))
 
-    async def resolve_station_id(self, client: httpx.AsyncClient, server_url: str, api_key: str) -> str:
+    async def fetch_stations(self, client: httpx.AsyncClient, server_url: str, api_key: str) -> list[dict]:
+        """Fetch the station profiles available to an API key.
+
+        Wavelog returns the profiles as a JSON array.  Keep the complete
+        profile objects so the UI can show a useful label (callsign/name)
+        while still submitting only the selected ``station_id``.
+        """
         url = server_url.rstrip("/") + "/index.php/api/station_info/" + quote(api_key, safe="")
         response = await client.get(url)
         response.raise_for_status()
         stations = response.json()
         if not isinstance(stations, list) or not stations:
             raise ValueError("API key 下没有可用的电台位置")
+        valid_stations = [station for station in stations if isinstance(station, dict) and station.get("station_id") is not None]
+        if not valid_stations:
+            raise ValueError("Wavelog 返回的电台位置缺少 station_id")
+        return valid_stations
+
+    async def resolve_station_id(self, client: httpx.AsyncClient, server_url: str, api_key: str) -> str:
+        stations = await self.fetch_stations(client, server_url, api_key)
         active = [station for station in stations if str(station.get("station_active", "")) == "1"]
         selected = active[0] if active else stations[0]
-        station_id = selected.get("station_id")
-        if station_id is None:
-            raise ValueError("Wavelog 返回的电台位置缺少 station_id")
-        return str(station_id)
+        return str(selected["station_id"])
+
+    async def list_stations(self, server_url: str, api_key: str) -> list[dict]:
+        """Fetch station profiles for the configuration UI."""
+        server_url = server_url.strip()
+        api_key = api_key.strip()
+        if not server_url:
+            raise ValueError("服务器 URL 不能为空")
+        if not api_key:
+            raise ValueError("API Key 不能为空")
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            return await self.fetch_stations(client, server_url, api_key)
 
     def mark_status(self, file_id: int, status: str) -> None:
         with connect() as conn:
