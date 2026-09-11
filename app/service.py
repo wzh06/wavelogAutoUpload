@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .db import connect
+from .db import DEFAULT_SCAN_INTERVAL, connect
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ class UploadService:
                 current_time = time.time()
                 if not force and self.next_scans.get(user["id"], 0) > current_time:
                     continue
-                self.next_scans[user["id"]] = current_time + max(5, int(user["scan_interval"] or 60))
+                self.next_scans[user["id"]] = current_time + max(5, int(user["scan_interval"] or DEFAULT_SCAN_INTERVAL))
                 directory = Path(user["directory"])
                 if not directory.exists():
                     conn.execute(

@@ -29,7 +29,7 @@ echo Installing or checking Python dependencies...
 if errorlevel 1 goto :pip_error
 
 echo Starting Wavelog ADI Auto Upload on http://0.0.0.0:10086
-".venv\Scripts\python.exe" -m uvicorn app.main:app --host 0.0.0.0 --port 10086
+".venv\Scripts\python.exe" -m uvicorn app.main:app --host 0.0.0.0 --port 10086 --no-use-colors
 set "APP_EXIT=%ERRORLEVEL%"
 if not "%APP_EXIT%"=="0" goto :server_error
 popd

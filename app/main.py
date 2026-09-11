@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
 import sys
 
@@ -6,7 +7,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .db import connect, init_db
+from .db import DEFAULT_SCAN_INTERVAL, connect, init_db
 from .service import service
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -25,6 +26,38 @@ def configure_console_encoding() -> None:
 
 
 configure_console_encoding()
+
+
+class _AsciiConsoleFilter(logging.Filter):
+    """Keep Windows CMD output free of localized/non-ASCII error text."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        exception_text = ""
+        if record.exc_info and record.exc_info[1] is not None:
+            exception_text = str(record.exc_info[1])
+        if any(ord(char) > 127 for char in message) or any(ord(char) > 127 for char in exception_text):
+            if "10048" in message:
+                message = "Port 10086 is already in use (Windows error 10048)."
+            else:
+                message = message.encode("ascii", errors="replace").decode("ascii")
+            record.msg = message
+            record.args = ()
+            # Avoid a localized exception traceback being appended by the formatter.
+            record.exc_info = None
+            record.exc_text = None
+        return True
+
+
+def configure_console_logging() -> None:
+    """Prevent localized Windows errors from leaking into the CMD window."""
+    for logger_name in ("uvicorn", "uvicorn.error"):
+        logger = logging.getLogger(logger_name)
+        if not any(isinstance(item, _AsciiConsoleFilter) for item in logger.filters):
+            logger.addFilter(_AsciiConsoleFilter())
+
+
+configure_console_logging()
 
 
 @asynccontextmanager
@@ -49,7 +82,7 @@ def dashboard(request: Request):
 
 
 @app.post("/users")
-def create_user(name: str = Form(...), directory: str = Form(...), server_url: str = Form(...), api_key: str = Form(...), station_profile_id: str = Form(""), scan_interval: int = Form(60)):
+def create_user(name: str = Form(...), directory: str = Form(...), server_url: str = Form(...), api_key: str = Form(...), station_profile_id: str = Form(""), scan_interval: int = Form(DEFAULT_SCAN_INTERVAL)):
     with connect() as conn:
         conn.execute("INSERT INTO users(name,directory,server_url,api_key,station_profile_id,scan_interval) VALUES(?,?,?,?,?,?)", (name.strip(), directory.strip(), server_url.strip(), api_key.strip(), station_profile_id.strip(), max(5, scan_interval)))
     return RedirectResponse("/", status_code=303)
@@ -65,7 +98,7 @@ def edit_user_page(request: Request, user_id: int):
 
 
 @app.post("/users/{user_id}/edit")
-def edit_user(user_id: int, name: str = Form(...), directory: str = Form(...), server_url: str = Form(...), api_key: str = Form(""), station_profile_id: str = Form(""), scan_interval: int = Form(60)):
+def edit_user(user_id: int, name: str = Form(...), directory: str = Form(...), server_url: str = Form(...), api_key: str = Form(""), station_profile_id: str = Form(""), scan_interval: int = Form(DEFAULT_SCAN_INTERVAL)):
     with connect() as conn:
         if api_key.strip():
             conn.execute("UPDATE users SET name=?,directory=?,server_url=?,api_key=?,station_profile_id=?,scan_interval=? WHERE id=?", (name.strip(), directory.strip(), server_url.strip(), api_key.strip(), station_profile_id.strip(), max(5, scan_interval), user_id))
